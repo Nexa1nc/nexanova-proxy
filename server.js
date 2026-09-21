@@ -6,7 +6,6 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Permette al tuo sito HTML di fare richieste a questo server senza blocchi CORS
 app.use(cors());
 
 app.get('/search', async (req, res) => {
@@ -16,44 +15,66 @@ app.get('/search', async (req, res) => {
   }
 
   try {
-    // Effettua lo scraping della versione HTML di DuckDuckGo
-    const response = await axios.get(`https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`, {
+    // Usiamo lite.duckduckgo.com che viene bloccato molto meno rispetto alla versione HTML
+    const response = await axios.get(`https://lite.duckduckgo.com/lite/`, {
+      params: { q: query },
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-      }
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7'
+      },
+      timeout: 10000 // Timeout di 10 secondi per evitare che la chiamata blocchi Render
     });
 
     const $ = cheerio.load(response.data);
     const results = [];
 
-    $('.result').each((index, element) => {
-      const title = $(element).find('.result__title').text().trim();
-      const rawUrl = $(element).find('.result__url').attr('href');
-      const snippet = $(element).find('.result__snippet').text().trim();
+    // Estrazione dai risultati della versione Lite di DuckDuckGo
+    $('.result-snippet').each((index, element) => {
+      const snippet = $(element).text().trim();
+      const prevRow = $(element).parent().prev();
+      const linkElem = prevRow.find('.result-link');
+      
+      const title = linkElem.text().trim();
+      const url = linkElem.attr('href');
 
-      if (title && rawUrl) {
-        // Pulisce eventuali redirect di DuckDuckGo per estrarre l'URL finale
-        let cleanUrl = rawUrl;
-        if (rawUrl.includes('uddg=')) {
-          cleanUrl = decodeURIComponent(rawUrl.split('uddg=')[1].split('&')[0]);
-        }
-
+      if (title && url) {
         results.push({
           title: title,
-          url: cleanUrl,
+          url: url,
           description: snippet || "Risultato recuperato da NexaNova Proxy."
         });
       }
     });
 
+    // Se per qualche motivo DuckDuckGo risponde 200 ma non trovi risultati nell'HTML
+    if (results.length === 0) {
+      // Tenta fallback su DuckDuckGo API istantanea
+      const apiRes = await axios.get(`https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1`);
+      if (apiRes.data && apiRes.data.RelatedTopics) {
+        apiRes.data.RelatedTopics.forEach(item => {
+          if (item.Text && item.FirstURL) {
+            results.push({
+              title: item.Text.split(' - ')[0] || item.Text,
+              url: item.FirstURL,
+              description: item.Text
+            });
+          }
+        });
+      }
+    }
+
     res.json({ results: results });
 
   } catch (error) {
-    console.error("Errore durante lo scraping:", error.message);
-    res.status(500).json({ error: 'Errore nel recupero dei risultati', details: error.message });
+    console.error("Errore durante la ricerca:", error.message);
+    res.status(500).json({ 
+      error: 'Errore nel recupero dei risultati dal proxy', 
+      details: error.message 
+    });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(`Server NexaNova Proxy attivo sulla porta ${PORT}`);
+  console.log(`Server NexaNova attivo sulla porta ${PORT}`);
 });
